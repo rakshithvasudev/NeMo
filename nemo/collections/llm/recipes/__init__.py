@@ -25,7 +25,7 @@ from nemo.collections.llm.recipes import (
     gpt3_175b,
     hf_auto_model_for_causal_lm,
     llama3_8b,
-    llama3_8b_dolly.py,
+    llama3_8b_dolly,
     llama3_8b_16k,
     llama3_8b_64k,
     llama3_70b,
