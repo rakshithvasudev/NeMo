@@ -84,6 +84,7 @@ __all__ = [
     "gemma_2b",
     "gemma_7b",
     "llama3_8b",
+    "llama3_8b_dolly",
     "llama3_8b_16k",
     "llama3_8b_64k",
     "llama3_70b",
