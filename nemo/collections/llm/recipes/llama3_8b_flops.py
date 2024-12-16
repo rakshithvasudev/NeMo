@@ -29,6 +29,7 @@ from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.gpt.data.packed_sequence import PackedSequenceSpecs
 from nemo.collections.llm.gpt.model.llama import Llama3Config8B, LlamaModel
+from nemo.collections.llm.peft.lora import LoRA
 #from nemo.collections.llm.peft import PEFT_STR2CLS
 from nemo.collections.llm.recipes.finetune_default import default_finetune_recipe
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
@@ -346,32 +347,35 @@ def finetune_recipe(
     if packed_sequence is None:
         packed_sequence = performance_mode
 
-    # For unpacked sequence, most samples in SQuAD dataset are shorter than 2K
     if seq_length is None:
         seq_length = 4096 if packed_sequence else 2048
 
+    base_dir = dir if dir else "/ifs/data/nemo2.0_writecheckpoints"
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    experiment_name = f"finetune_{timestamp}"
+    dated_timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    
+    tb_events_dir = os.path.join(base_dir, "tb_logs", experiment_name, dated_timestamp)
+
     recipe = default_finetune_recipe(
-        model(), "meta-llama/Meta-Llama-3-8B", dir, name, num_nodes, num_gpus_per_node, packed_sequence
+        model(), "meta-llama/Meta-Llama-3-8B", base_dir, experiment_name,
+        num_nodes, num_gpus_per_node, packed_sequence
     )
+
     if peft_scheme is None or peft_scheme.lower() == 'none':
         recipe.trainer.strategy.tensor_model_parallel_size = 2
         recipe.optim.config.lr = 5e-6
     elif peft_scheme.lower() in ['lora']:
-        #recipe.peft = run.Config(PEFT_STR2CLS[peft_scheme.lower()])
         recipe.peft = run.Config(LoRA)
         recipe.peft.dim = 8
         recipe.peft.alpha = 16
         recipe.peft.target_modules = ['linear_qkv']
-        #recipe.optim.config.use_distributed_optimizer = False
-
-        # some settings currently do not function correctly with LoRA
         recipe.model.config.cross_entropy_loss_fusion = False
-
         recipe.optim.config.lr = 1e-4
     else:
         raise ValueError(f"Unrecognized peft scheme: {peft_scheme}")
 
-    # Sequence length settings in the model and dataset must agree
+    # Sequence length settings
     recipe.model.config.seq_length = seq_length
     recipe.data.seq_length = seq_length
     if packed_sequence:
@@ -381,8 +385,41 @@ def finetune_recipe(
     if performance_mode:
         recipe = finetune_performance_optimizations(recipe, peft_scheme)
 
-    return recipe
 
+
+    model_cfg = Llama3Config8B()
+    flops_config = {
+        'run': {'name': NAME},
+        'model': {
+            'global_batch_size': recipe.data.global_batch_size,
+            'hidden_size': model_cfg.hidden_size,
+            'num_layers': model_cfg.num_layers,
+            'num_attention_heads': model_cfg.num_attention_heads,
+            'ffn_hidden_size': model_cfg.ffn_hidden_size,
+            'encoder_seq_length': seq_length,
+            'peft': ({
+                'type': 'lora',
+                'lora_rank': recipe.peft.dim if peft_scheme.lower() == 'lora' else None,
+                'num_frozen_layers': 0  # All layers participate in forward pass
+            } if peft_scheme and peft_scheme.lower() == 'lora' else None)
+        },
+        'trainer': {
+            'num_nodes': num_nodes,
+            'devices': num_gpus_per_node,
+        }
+    } 
+
+    if not hasattr(recipe.trainer, "callbacks"):
+        recipe.trainer.callbacks = []
+    recipe.trainer.callbacks.extend([
+        run.Config(TimingCallback),
+        run.Config(DeltaTimingCallback),
+        run.Config(FLOPsMeasurementCallback, 
+                  model_config=flops_config,
+                  log_dir=tb_events_dir)  
+    ])
+
+    return recipe   
 
 def finetune_performance_optimizations(
     recipe: run.Partial,
