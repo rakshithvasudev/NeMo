@@ -22,6 +22,7 @@ from nemo.collections.llm.recipes import (
     hf_auto_model_for_causal_lm,
     llama3_8b,
     llama3_8b_dolly,
+    llama3_8b_flops,
     llama3_8b_16k,
     llama3_8b_64k,
     llama3_70b,
@@ -62,6 +63,12 @@ from nemo.collections.llm.recipes import (
     starcoder2_7b,
     starcoder2_15b,
 )
+
+
+# explicitly addng custom recipes here for easy ID
+#from nemo.collections.llm.recipes import llama3_8b_dolly
+#from nemo.collections.llm.recipes import llama3_8b_flops
+
 from nemo.collections.llm.recipes.log.default import default_log, default_resume
 from nemo.collections.llm.recipes.optim import adam
 
@@ -72,6 +79,7 @@ __all__ = [
     "gemma_7b",
     "llama3_8b",
     "llama3_8b_dolly",
+    "llama3_8b_flops",
     "llama3_8b_16k",
     "llama3_8b_64k",
     "llama3_70b",

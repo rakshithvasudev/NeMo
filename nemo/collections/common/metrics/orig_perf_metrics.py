@@ -15,8 +15,7 @@
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-#from lightning.pytorch.callbacks.callback import Callback
-from pytorch_lightning.callbacks import Callback
+from lightning.pytorch.callbacks import Callback
 
 from nemo.collections.common.parts.perf_metrics_utils import LLM_VOCAB_SIZE_MAP, read_tb_log
 from nemo.utils import logging
@@ -30,18 +29,17 @@ class FLOPsMeasurementCallback(Callback):
 
     Args:
         model_config (Dict[str, Any]): params for running the experiment/job.
-            Expects a nested dictionary with parent keys
-                1. run- for assessing model name (Eg. 'gpt3', 'llama2', etc.) from sub-key 'name'.
-                    'name' usually has value like- train_gpt3_5b_*, which is matched to model name 'gpt3'.
-                2. exp_manager- for accessing 'explicit_log_dir'. tensorboard log file is stored here,
-                    used for accessing step time needed for calculating TFLOPs per sec per GPU
-                3. trainer- for accessing 'num_nodes' and 'devices' needed for calculating
-                    TFLOPs per sec per GPU
-                4. model- Hyperparams for the model. Specifically- global batch size, sequence length,
-                    hidden size,  ffn hidden size, num_layers, num_attention_heads, num_query_groups,
-                    moe_router_topk. For PEFT jobs: peft config with type and num_frozen_layers.
-                    For LoRA: also includes lora_rank.
-        log_dir (Optional[str]): Directory with tensorboard log file. If present, will override
+        Expects a nested dictionary with parent keys
+            1. run- for assessing model name (Eg. 'gpt3', 'llama2', etc.) from sub-key 'name'.
+                'name' usually has value like- train_gpt3_5b_*, which is matched to model name 'gpt3'.
+            2. exp_manager- for accessing 'explicit_log_dir'. tensorboard log file is stored here,
+                used for accessing step time needed for calculating TFLOPs per sec per GPU
+            3. trainer- for accessing 'num_nodes' and 'devices' needed for calculating
+                TFLOPs per sec per GPU
+            4. model- Hyperparams for the model. Specifically- global batch size, sequence length,
+                hidden size,  ffn hidden size, num_layers, num_attention_heads, num_query_groups,
+                moe_router_topk. (list might increase with new models as required)
+        log_dir (Optional[str]): Directory with tenbsorboard log file. If present, will overrride
             'explicit_log_dir' in model_config. Defaults to None.
         model_name (Optional[str]): If present, will override 'name' under 'run' in model_config.
             Defaults to None.
@@ -85,20 +83,6 @@ class FLOPsMeasurementCallback(Callback):
 
         self.model = self.model.lower() if self.model is not None else self.model
 
-    def _lora_flops(self, input_dim: int, output_dim: int, rank: int) -> float:
-        """Calculates FLOPs for LoRA in a single dense layer.
-
-        Args:
-            input_dim (int): Input dimension of the layer.
-            output_dim (int): Output dimension of the layer.
-            rank (int): Rank of the LoRA matrices.
-
-        Returns:
-            float: FLOPs for LoRA in the layer.
-        """
-        # This is the low rank adapter end
-        return 2 * self.gbs * self.enc_seq_len * (input_dim * rank + rank * output_dim) 
-
     def on_train_end(self, trainer, pl_module):
         """
         PyTorch Lightning callback hook to calculate TFLOPs per sec per GPU after training
@@ -106,6 +90,9 @@ class FLOPsMeasurementCallback(Callback):
         tflops_per_sec_per_gpu = -1
 
         try:
+            if "peft" in self.cfg["model"]:
+                raise NotImplementedError("FLOPs measurement not supported for finetuning jobs")
+
             step_time_list = read_tb_log(self.log_dir, "train_step_timing in s")
             tflops_per_sec_per_gpu = self.eval_tflops_per_sec_per_gpu(step_time_list)
         except Exception as exc:
@@ -119,9 +106,9 @@ class FLOPsMeasurementCallback(Callback):
         """
         Args:
             train_step_time (Any[List, float, int]): Train step time (in seconds).
-                Step time will be less stable for initial steps (~10 steps)- less
-                accurate measurement
-                Use average step time over several steps for higher accuracy
+            Step time will be less stable for initial steps (~10 steps)- less
+            accurate measurement
+            Use average step time over several steps for higher accuracy
         Returns:
             (float): Model TFLOPs per sec per gpu
         """
@@ -139,6 +126,7 @@ class FLOPsMeasurementCallback(Callback):
         """
         Calculate model FLOPs for a given model
         """
+
         model_flops_map = {
             "gpt3": self._gpt3,
             "llama2": self._llama2,
@@ -156,41 +144,25 @@ class FLOPsMeasurementCallback(Callback):
             raise KeyError(f"Failed to extract valid model name from or missing FLOPs calculations for {self.model}")
 
         total_flops = model_flops_map[self.model]()
-
-        # Consider only the decoder layers for finetuning jobs
-        if "peft" in self.cfg["model"]:
-            if self.cfg["model"]["peft"]["type"] == "lora":
-                # LORA calculations handled within the model-specific functions
-                pass 
-            else:
-                total_flops = total_flops / self.layers * (self.layers - self.cfg["model"]["peft"]["num_frozen_layers"])
-
         flops_per_gpu = total_flops / (self.num_nodes * self.num_gpus_per_node)
 
         return total_flops, flops_per_gpu
 
     def _gpt3(self):
         """Model FLOPs for GPT3 family"""
+
         vocab_size = LLM_VOCAB_SIZE_MAP["gpt3"]
-        total_flops = (
+
+        return (
             24 * self.gbs * self.enc_seq_len * self.hs * self.hs
             + 4 * self.gbs * self.enc_seq_len * self.enc_seq_len * self.hs
         ) * (3 * self.layers) + (6 * self.gbs * self.enc_seq_len * self.hs * vocab_size)
-
-        if "peft" in self.cfg["model"] and self.cfg["model"]["peft"]["type"] == "lora":
-            rank = self.cfg["model"]["peft"]["lora_rank"]
-            for _ in range(self.layers):  
-                total_flops += self._lora_flops(self.hs, self.hs, rank) 
-                total_flops += self._lora_flops(self.hs, self.ffn_hs, rank)
-                total_flops += self._lora_flops(self.ffn_hs, self.hs, rank)
-
-        return total_flops
 
     def _llama2(self):
         """Model FLOPs for llama2 family"""
         vocab_size = LLM_VOCAB_SIZE_MAP["llama2"]
 
-        total_flops = (
+        return (
             self.gbs
             * self.enc_seq_len
             * self.layers
@@ -204,21 +176,12 @@ class FLOPsMeasurementCallback(Callback):
                 + (6 * vocab_size / (self.layers * self.hs))
             )
         )
-
-        if "peft" in self.cfg["model"] and self.cfg["model"]["peft"]["type"] == "lora":
-            rank = self.cfg["model"]["peft"]["lora_rank"]
-            for _ in range(self.layers):  
-                total_flops += self._lora_flops(self.hs, self.hs, rank) 
-                total_flops += self._lora_flops(self.hs, self.ffn_hs, rank)
-                total_flops += self._lora_flops(self.ffn_hs, self.hs, rank)
-
-        return total_flops
 
     def _llama3(self):
         """Model FLOPs for llama3 family"""
         vocab_size = LLM_VOCAB_SIZE_MAP["llama3"]
 
-        total_flops = (
+        return (
             self.gbs
             * self.enc_seq_len
             * self.layers
@@ -233,24 +196,11 @@ class FLOPsMeasurementCallback(Callback):
             )
         )
 
-        logging.info("========******========="*10)
-        logging.info(self.cfg)
-        if "peft" in self.cfg["model"] and self.cfg["model"]["peft"]["type"] == "lora":
-            logging.info("Entering llama3 LORA calculations......")
-            logging.info("========******========="*10)
-            rank = self.cfg["model"]["peft"]["lora_rank"]
-            for _ in range(self.layers):  
-                total_flops += self._lora_flops(self.hs, self.hs, rank) 
-                total_flops += self._lora_flops(self.hs, self.ffn_hs, rank)
-                total_flops += self._lora_flops(self.ffn_hs, self.hs, rank)
-
-        return total_flops
-
     def _nemotron(self):
         """Model FLOPs for nemotron family"""
         vocab_size = LLM_VOCAB_SIZE_MAP["nemotron"]
 
-        total_flops = (
+        return (
             self.gbs
             * self.enc_seq_len
             * self.layers
@@ -265,20 +215,11 @@ class FLOPsMeasurementCallback(Callback):
             )
         )
 
-        if "peft" in self.cfg["model"] and self.cfg["model"]["peft"]["type"] == "lora":
-            rank = self.cfg["model"]["peft"]["lora_rank"]
-            for _ in range(self.layers):  
-                total_flops += self._lora_flops(self.hs, self.hs, rank) 
-                total_flops += self._lora_flops(self.hs, self.ffn_hs, rank)
-                total_flops += self._lora_flops(self.ffn_hs, self.hs, rank)
-
-        return total_flops
-
     def _mixtral(self):
         """Model FLOPs for mixtral family"""
         vocab_size = LLM_VOCAB_SIZE_MAP["mixtral"]
 
-        total_flops = (
+        return (
             self.gbs
             * self.enc_seq_len
             * self.layers
@@ -292,12 +233,6 @@ class FLOPsMeasurementCallback(Callback):
                 + (6 * vocab_size / (self.layers * self.hs))
             )
         )
-
-        if "peft" in self.cfg["model"] and self.cfg["model"]["peft"]["type"] == "lora":
-            rank = self.cfg["model"]["peft"]["lora_rank"]
-            for _ in range(self.layers):  
-                total_flops += self._lora_flops(self.hs, self.hs, rank) 
-                total_flops += self._lora_flops(self.hs, self.ffn_hs, rank)
 
     def _bert(self):
         """Model FLOPs for BERT family"""
