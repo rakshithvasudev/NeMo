@@ -388,6 +388,39 @@ def finetune_recipe(
 
 
     model_cfg = Llama3Config8B()
+
+    # todo (rakshithvasudev make this more detailed and precise)
+
+    # For now I'll leave it here.
+    # so this FLOPs calculation? It's an estimate of the computational 
+    # cost for this model and setup. We're using standard formulas and making 
+    # some assumptions about the model's architecture and how LoRA is 
+    # implemented.
+    
+    # But keep in mind, the actual FLOPs could be different. Here's why:
+    
+    # Model Implementation: Different models and implementations can have 
+    # their own little quirks that affect the FLOPs. Not to mention we have a ballpark 
+    # provided by nemo.
+
+    # LoRA Configuration:  Things like LoRA rank, scaling factors, or where 
+    #   those adapter matrices are placed can also change the computational cost.
+    # Hardware and Software: Even the hardware and software you're using 
+    #   can play a role in the actual FLOPs.
+    
+    # So, take this FLOPs number with a grain of salt. It's good for 
+    # comparing stuff and getting a general idea of performance, but if you 
+    # need super accurate numbers, you'll want to do some detailed profiling 
+    # tailored to your specific setup.
+    
+    #  Right now, we're assuming LoRA is applied to 
+    # all layers. If you're only using LoRA on specific layers (like with 
+    # that `target_modules` thing), you might need to tweak the calculation 
+    # to get the right FLOPs.
+
+    # a fun fact: Even though LoRA freezes a model's pretrained weights, 
+    # it actually increases the FLOPs due to its additive nature! 
+
     flops_config = {
         'run': {'name': NAME},
         'model': {
@@ -400,7 +433,7 @@ def finetune_recipe(
             'peft': ({
                 'type': 'lora',
                 'lora_rank': recipe.peft.dim if peft_scheme.lower() == 'lora' else None,
-                'num_frozen_layers': 0  # All layers participate in forward pass
+                'num_frozen_layers': 0   
             } if peft_scheme and peft_scheme.lower() == 'lora' else None)
         },
         'trainer': {
