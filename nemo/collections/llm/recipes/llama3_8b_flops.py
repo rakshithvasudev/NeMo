@@ -389,7 +389,8 @@ def finetune_recipe(
 
     model_cfg = Llama3Config8B()
 
-    # todo (rakshithvasudev make this more detailed and precise)
+    # todo (rakshithvasudev make this more detailed and precise allocating modulewise flops count in
+    # accordance with target modules )
 
     # For now I'll leave it here.
     # so this FLOPs calculation? It's an estimate of the computational 
